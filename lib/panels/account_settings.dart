@@ -5,6 +5,19 @@ import '../services/auth_service.dart';
 import '../main.dart';
 import 'login.dart';
 
+const _officialPositions = [
+  'Barangay Captain',
+  'Barangay Kagawad',
+  'SK Chairperson',
+  'Barangay Secretary',
+  'Barangay Treasurer',
+  'BDRRMC Coordinator',
+  'BDRRMC Member',
+  'Tanod Commander',
+  'Barangay Tanod',
+  'Health Worker',
+];
+
 class AccountSettingsScreen extends StatefulWidget {
   const AccountSettingsScreen({super.key});
 
@@ -37,6 +50,7 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
   bool _showConfirmPass = false;
   String? _userId;
   String _role = 'community_member';
+  String? _selectedPosition;
 
   bool get _isOfficial =>
       _role == 'barangay_official' || _role == 'bdrrmc_member';
@@ -130,7 +144,9 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
         _firstNameCtrl.text = row['first_name'] ?? '';
         _lastNameCtrl.text = row['last_name'] ?? '';
         _usernameCtrl.text = row['username'] ?? '';
-        _positionCtrl.text = row['position'] ?? '';
+        final pos = row['position'] as String? ?? '';
+        _positionCtrl.text = pos;
+        _selectedPosition = _officialPositions.contains(pos) ? pos : null;
       } else {
         final row = await _supabase
             .from('residents')
@@ -152,7 +168,9 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
         _usernameCtrl.text = cached['username'] ?? '';
         _phoneCtrl.text = cached['phone_number'] ?? '';
         _addressCtrl.text = cached['address'] ?? '';
-        _positionCtrl.text = cached['position'] ?? '';
+        final pos = cached['position'] as String? ?? '';
+        _positionCtrl.text = pos;
+        _selectedPosition = _officialPositions.contains(pos) ? pos : null;
       }
     }
 
@@ -205,21 +223,16 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
   Future<void> _deleteAccount() async {
     setState(() => _saving = true);
     try {
-      // Delete reports first
       await _supabase.from('reports').delete().eq('user_id', _userId!);
-      // Delete from role table
       if (_isOfficial) {
         await _supabase.from('officials').delete().eq('id', _userId!);
       } else {
         await _supabase.from('residents').delete().eq('id', _userId!);
       }
-      // Delete from users table
       await _supabase.from('users').delete().eq('id', _userId!);
-      // Try to delete auth user via RPC (optional, may fail without service role)
       try {
         await _supabase.rpc('delete_user', params: {'user_id': _userId});
       } catch (_) {}
-      // Sign out
       await AuthService.logout();
 
       if (!mounted) return;
@@ -642,11 +655,17 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
                         if (_isOfficial) ...[
                           _animated(
                             2,
-                            _TacticalFormField(
-                              controller: _positionCtrl,
+                            _TacticalDropdownField(
                               label: 'POSITION / TITLE',
-                              hint: 'e.g. Barangay Captain',
+                              value: _selectedPosition,
+                              items: _officialPositions,
                               icon: Icons.badge_outlined,
+                              onChanged: (v) {
+                                setState(() {
+                                  _selectedPosition = v;
+                                  _positionCtrl.text = v ?? '';
+                                });
+                              },
                               validator: (v) =>
                                   (v == null || v.isEmpty) ? 'REQUIRED' : null,
                             ),
@@ -840,7 +859,6 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen>
                                   child: _TacticalButton(
                                     label: 'DELETE MY ACCOUNT',
                                     icon: Icons.delete_forever_outlined,
-                                    // Only active when not saving
                                     onPressed: _saving ? () {} : _confirmDelete,
                                     primary: false,
                                     danger: true,
@@ -921,6 +939,119 @@ class _SectionHeader extends StatelessWidget {
             color: danger ? AppColors.red : AppColors.textPrimary,
             letterSpacing: 2.5,
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TacticalDropdownField extends StatelessWidget {
+  final String label;
+  final String? value;
+  final List<String> items;
+  final IconData icon;
+  final void Function(String?) onChanged;
+  final String? Function(String?)? validator;
+
+  const _TacticalDropdownField({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.icon,
+    required this.onChanged,
+    this.validator,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'IBMPlexMono',
+            fontSize: 9,
+            color: AppColors.textSecondary,
+            letterSpacing: 2,
+          ),
+        ),
+        const SizedBox(height: 6),
+        DropdownButtonFormField<String>(
+          value: value,
+          validator: validator,
+          isExpanded: true,
+          decoration: InputDecoration(
+            prefixIcon: Icon(icon, size: 16, color: AppColors.textSecondary),
+            filled: true,
+            fillColor: AppColors.surface,
+            contentPadding: const EdgeInsets.symmetric(
+              vertical: 15,
+              horizontal: 14,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(
+                color: AppColors.electric,
+                width: 1.5,
+              ),
+            ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: BorderSide(
+                color: AppColors.red.withValues(alpha: 0.6),
+              ),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: AppColors.red, width: 1.5),
+            ),
+            errorStyle: const TextStyle(
+              fontFamily: 'IBMPlexMono',
+              fontSize: 9,
+              color: AppColors.red,
+              letterSpacing: 0.5,
+            ),
+          ),
+          dropdownColor: AppColors.surface,
+          iconEnabledColor: AppColors.textSecondary,
+          style: const TextStyle(
+            fontFamily: 'IBMPlexMono',
+            fontSize: 13,
+            color: AppColors.textPrimary,
+          ),
+          hint: const Text(
+            'Select position...',
+            style: TextStyle(
+              fontFamily: 'IBMPlexMono',
+              color: AppColors.textDim,
+              fontSize: 12,
+            ),
+          ),
+          items: items
+              .map(
+                (p) => DropdownMenuItem(
+                  value: p,
+                  child: Text(
+                    p,
+                    style: const TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 12,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: onChanged,
         ),
       ],
     );

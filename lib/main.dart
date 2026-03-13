@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'panels/login.dart';
@@ -170,34 +171,27 @@ class _SplashState extends State<Splash> with TickerProviderStateMixin {
     _checkSession();
   }
 
-  /// Key fix: check session AND verify the auth user is still valid.
-  /// After registerResident/Official we call signOut(), so currentSession
-  /// should be null. But if there's a stale token we also refresh metadata.
   Future<void> _checkSession() async {
     await Future.delayed(const Duration(seconds: 3));
     if (!mounted) return;
 
     final session = Supabase.instance.client.auth.currentSession;
 
-    // No session at all → Login
     if (session == null) {
       _navigate(const Login());
       return;
     }
 
-    // Session exists — try to refresh profile from DB
     final profile = await AuthService.refreshUserData();
 
     if (!mounted) return;
 
-    // If refresh failed (DB error, invalid token, etc.) → Login
     if (profile == null) {
       await AuthService.logout();
       _navigate(const Login());
       return;
     }
 
-    // Good session + valid profile → route by role
     final role = profile['role'] as String? ?? 'community_member';
     final isOfficial = role == 'barangay_official' || role == 'bdrrmc_member';
 
@@ -454,12 +448,16 @@ class _HexPainter extends CustomPainter {
     final cx = size.width / 2;
     final cy = size.height / 2;
     final r = size.width / 2 * 0.9;
-    final path = Path();
+    final path = ui.Path();
     for (var i = 0; i < 6; i++) {
       final angle = (i * 60 - 30) * math.pi / 180;
       final x = cx + r * math.cos(angle);
       final y = cy + r * math.sin(angle);
-      i == 0 ? path.moveTo(x, y) : path.lineTo(x, y);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
     }
     path.close();
     canvas.drawPath(path, Paint()..color = fillColor);

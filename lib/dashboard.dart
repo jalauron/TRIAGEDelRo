@@ -1,11 +1,11 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../services/auth_service.dart';
-import 'login.dart';
-import 'account_settings.dart';
-import 'submit_report.dart';
-import '../main.dart';
+import 'services/auth_service.dart';
+import 'panels/login.dart';
+import 'panels/account_settings.dart';
+import 'panels/submit_report.dart';
+import 'main.dart';
 
 class _Report {
   final String id;

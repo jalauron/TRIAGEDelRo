@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:geolocator/geolocator.dart';
 import '../services/auth_service.dart';
 import '../main.dart';
 
@@ -44,6 +45,11 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
   String? _selectedSeverity;
   bool _submitting = false;
 
+  // Location
+  double? _pinnedLat;
+  double? _pinnedLng;
+  bool _gettingLocation = false;
+
   final _supabase = Supabase.instance.client;
 
   @override
@@ -59,7 +65,7 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
     )..repeat();
 
     _slideAnims = List.generate(
-      6,
+      7,
       (i) =>
           Tween<Offset>(begin: const Offset(0, 0.08), end: Offset.zero).animate(
             CurvedAnimation(
@@ -73,7 +79,7 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
           ),
     );
     _fadeAnims = List.generate(
-      6,
+      7,
       (i) => Tween<double>(begin: 0, end: 1).animate(
         CurvedAnimation(
           parent: _enterCtrl,
@@ -118,7 +124,123 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
     _ => Icons.report_outlined,
   };
 
-  // ── CRUD: CREATE — POST /rest/v1/reports ──────────────────────────────────
+  // ── LOCATION ──────────────────────────────────────────────────────────────
+  Future<void> _getCurrentLocation() async {
+    setState(() => _gettingLocation = true);
+    try {
+      // Check if location services are enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _showError('LOCATION SERVICES ARE DISABLED. ENABLE GPS AND TRY AGAIN.');
+        return;
+      }
+
+      // Check/request permissions
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _showError('LOCATION PERMISSION DENIED');
+          return;
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        _showError(
+          'LOCATION PERMISSION PERMANENTLY DENIED. ENABLE IN DEVICE SETTINGS.',
+        );
+        return;
+      }
+
+      Position? position;
+
+      // ── Step 1: Try last known position first (instant, no timeout risk) ──
+      try {
+        position = await Geolocator.getLastKnownPosition();
+      } catch (_) {}
+
+      // ── Step 2: If no last known, try medium accuracy with short timeout ──
+      if (position == null) {
+        try {
+          position = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.medium,
+              timeLimit: Duration(seconds: 10),
+            ),
+          );
+        } catch (_) {}
+      }
+
+      // ── Step 3: Final fallback — low accuracy, longer timeout ──
+      if (position == null) {
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.low,
+            timeLimit: Duration(seconds: 20),
+          ),
+        );
+      }
+
+      setState(() {
+        _pinnedLat = position!.latitude;
+        _pinnedLng = position.longitude;
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppColors.void_,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+            side: const BorderSide(color: AppColors.green, width: 1),
+          ),
+          content: Row(
+            children: [
+              const Icon(
+                Icons.check_circle_outline,
+                color: AppColors.green,
+                size: 14,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'LOCATION PINNED: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}',
+                  style: const TextStyle(
+                    fontFamily: 'IBMPlexMono',
+                    fontSize: 9,
+                    color: AppColors.green,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      // ── Friendly timeout message instead of raw exception ──
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('timeout') || msg.contains('timeoutexception')) {
+        _showError(
+          'GPS SIGNAL TIMEOUT — MOVE TO AN OPEN AREA OR ENABLE WIFI/MOBILE DATA TO ASSIST LOCATION.',
+        );
+      } else {
+        _showError('LOCATION ERROR: ${e.toString().toUpperCase()}');
+      }
+    } finally {
+      if (mounted) setState(() => _gettingLocation = false);
+    }
+  }
+
+  void _clearLocation() {
+    setState(() {
+      _pinnedLat = null;
+      _pinnedLng = null;
+    });
+  }
+
+  // ── SUBMIT ────────────────────────────────────────────────────────────────
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedCategory == null) {
@@ -132,6 +254,15 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
 
     setState(() => _submitting = true);
     try {
+      // Cross-field: need at least GPS coords OR a description
+      final hasDesc = _descriptionCtrl.text.trim().isNotEmpty;
+      final hasGps = _pinnedLat != null;
+      if (!hasGps && !hasDesc) {
+        _showError('PIN A GPS LOCATION OR ENTER AN INCIDENT DESCRIPTION');
+        setState(() => _submitting = false);
+        return;
+      }
+
       final user = _supabase.auth.currentUser;
       final userData = AuthService.getUserData();
 
@@ -139,10 +270,12 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
         'user_id': user?.id,
         'description': _descriptionCtrl.text.trim(),
         'location': _locationCtrl.text.trim(),
+        'lat': _pinnedLat,
+        'lng': _pinnedLng,
         'category': _selectedCategory,
         'severity': _selectedSeverity,
         'status': 'Pending',
-        'barangay': userData?['barangay'] ?? 'Triangulo',
+        'barangay': userData?['barangay'] ?? 'Del Rosario',
       });
 
       if (!mounted) return;
@@ -201,7 +334,6 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
         ),
         child: Stack(
           children: [
-            // Mini grid inside dialog
             Positioned.fill(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(6),
@@ -213,7 +345,6 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Success icon with glow
                   Container(
                     width: 64,
                     height: 64,
@@ -249,7 +380,43 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                     ),
                   ),
                   const SizedBox(height: 6),
-                  // Status row
+                  if (_pinnedLat != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.electric.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(2),
+                          border: Border.all(
+                            color: AppColors.electric.withValues(alpha: 0.25),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.location_on,
+                              size: 10,
+                              color: AppColors.electric,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'GPS: ${_pinnedLat!.toStringAsFixed(4)}, ${_pinnedLng!.toStringAsFixed(4)}',
+                              style: const TextStyle(
+                                fontFamily: 'IBMPlexMono',
+                                fontSize: 9,
+                                color: AppColors.electric,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
@@ -360,12 +527,10 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
       ),
       body: Stack(
         children: [
-          // ── Grid background (matches login/register) ──────────────
           CustomPaint(
             painter: _GridPainter(),
             size: MediaQuery.of(context).size,
           ),
-          // ── Scan line ─────────────────────────────────────────────
           AnimatedBuilder(
             animation: _scan,
             builder: (_, __) {
@@ -389,9 +554,7 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
               );
             },
           ),
-          // ── Corner accents ────────────────────────────────────────
           const _CornerAccents(),
-          // ── Content ───────────────────────────────────────────────
           SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Form(
@@ -470,7 +633,6 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                   // ── Category ───────────────────────────────────────
                   _animated(1, _SectionHeader('INCIDENT CATEGORY')),
                   const SizedBox(height: 14),
-
                   _animated(
                     1,
                     GridView.count(
@@ -554,7 +716,6 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                       ),
                     ),
                   ),
-
                   _animated(
                     2,
                     Column(
@@ -648,16 +809,170 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                   _animated(3, _SectionHeader('LOCATION')),
                   const SizedBox(height: 14),
 
+                  // GPS Pin button
+                  _animated(
+                    3,
+                    _pinnedLat != null
+                        ? Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.green.withValues(alpha: 0.07),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: AppColors.green.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 32,
+                                  height: 32,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.green.withValues(
+                                      alpha: 0.1,
+                                    ),
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                  child: const Icon(
+                                    Icons.location_on,
+                                    color: AppColors.green,
+                                    size: 16,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'GPS LOCATION PINNED',
+                                        style: TextStyle(
+                                          fontFamily: 'Rajdhani',
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.green,
+                                          letterSpacing: 1.5,
+                                        ),
+                                      ),
+                                      Text(
+                                        '${_pinnedLat!.toStringAsFixed(6)}, ${_pinnedLng!.toStringAsFixed(6)}',
+                                        style: const TextStyle(
+                                          fontFamily: 'IBMPlexMono',
+                                          fontSize: 9,
+                                          color: AppColors.textSecondary,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: _clearLocation,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(6),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.red.withValues(
+                                        alpha: 0.1,
+                                      ),
+                                      borderRadius: BorderRadius.circular(3),
+                                    ),
+                                    child: const Icon(
+                                      Icons.close,
+                                      size: 14,
+                                      color: AppColors.red,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : GestureDetector(
+                            onTap: _gettingLocation
+                                ? null
+                                : _getCurrentLocation,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 14,
+                                horizontal: 16,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.surface,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: AppColors.border,
+                                  style: BorderStyle.solid,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_gettingLocation)
+                                    const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        color: AppColors.electric,
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  else
+                                    const Icon(
+                                      Icons.my_location_rounded,
+                                      size: 16,
+                                      color: AppColors.electric,
+                                    ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    _gettingLocation
+                                        ? 'ACQUIRING GPS SIGNAL...'
+                                        : 'PIN MY CURRENT LOCATION',
+                                    style: const TextStyle(
+                                      fontFamily: 'Rajdhani',
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.electric,
+                                      letterSpacing: 2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ),
+                  const SizedBox(height: 10),
+
                   _animated(
                     3,
                     _TacticalTextField(
                       controller: _locationCtrl,
-                      label: 'LOCATION',
-                      hint: 'e.g. Purok 3, near the bridge',
+                      label:
+                          'LOCATION DESCRIPTION${_pinnedLat != null ? ' (OPTIONAL)' : ''}',
+                      hint: _pinnedLat != null
+                          ? 'e.g. Purok 3, near the bridge (optional)'
+                          : 'e.g. Purok 3, near the bridge',
                       icon: Icons.location_on_outlined,
-                      validator: (v) => v == null || v.trim().isEmpty
-                          ? 'LOCATION IS REQUIRED'
-                          : null,
+                      validator: (v) {
+                        if (_pinnedLat != null)
+                          return null; // GPS pinned — text optional
+                        if (v == null || v.trim().isEmpty) {
+                          return 'PIN GPS LOCATION OR ENTER A LOCATION DESCRIPTION';
+                        }
+                        return null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 2),
+                    child: Text(
+                      'PIN YOUR GPS LOCATION ABOVE AND/OR DESCRIBE THE LOCATION BELOW.',
+                      style: TextStyle(
+                        fontFamily: 'IBMPlexMono',
+                        fontSize: 8,
+                        color: AppColors.textDim,
+                        letterSpacing: 0.8,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 28),
@@ -680,19 +995,30 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                       ),
                     ),
                   ),
-
                   _animated(
                     4,
                     _TacticalTextField(
                       controller: _descriptionCtrl,
-                      label: 'DESCRIPTION',
-                      hint: 'Describe the situation…',
+                      label:
+                          'DESCRIPTION${_pinnedLat != null ? ' (OPTIONAL)' : ''}',
+                      hint: _pinnedLat != null
+                          ? 'Describe the situation… (optional if GPS pinned)'
+                          : 'Describe the situation…',
                       icon: Icons.edit_note_rounded,
                       maxLines: 5,
                       maxLength: 500,
                       validator: (v) {
+                        if (_pinnedLat != null) {
+                          // GPS pinned — description optional, but if filled must be meaningful
+                          if (v != null &&
+                              v.trim().isNotEmpty &&
+                              v.trim().length < 5) {
+                            return 'DESCRIPTION IS TOO SHORT';
+                          }
+                          return null;
+                        }
                         if (v == null || v.trim().isEmpty) {
-                          return 'DESCRIPTION IS REQUIRED';
+                          return 'DESCRIPTION IS REQUIRED (OR PIN YOUR GPS LOCATION)';
                         }
                         if (v.trim().length < 10) {
                           return 'DESCRIPTION IS TOO SHORT';
@@ -734,7 +1060,7 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                           const SizedBox(width: 12),
                           const Expanded(
                             child: Text(
-                              'Your report will be forwarded to barangay officials immediately. Keep this app open to receive status updates.',
+                              'GPS coordinates allow description and location text to be optional. If no GPS is pinned, both fields are required.',
                               style: TextStyle(
                                 fontFamily: 'IBMPlexMono',
                                 fontSize: 10,
@@ -752,7 +1078,7 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
 
                   // ── Submit ─────────────────────────────────────────
                   _animated(
-                    5,
+                    6,
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -999,7 +1325,7 @@ class _TacticalButtonState extends State<_TacticalButton> {
   }
 }
 
-// ─── Painters (matches login/register) ───────────────────────────────────────
+// ─── Painters ─────────────────────────────────────────────────────────────────
 
 class _CornerAccents extends StatelessWidget {
   const _CornerAccents();

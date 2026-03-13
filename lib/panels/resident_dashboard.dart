@@ -1,5 +1,8 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as latlng;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/auth_service.dart';
 import 'login.dart';
@@ -107,7 +110,7 @@ class _ResidentDashboardState extends State<ResidentDashboard>
           .select()
           .eq('user_id', userId)
           .order('submitted_at', ascending: false)
-          .limit(20);
+          .limit(50);
       setState(() {
         _reports = (data as List).map((r) => _Report.fromMap(r)).toList();
       });
@@ -149,6 +152,19 @@ class _ResidentDashboardState extends State<ResidentDashboard>
     _loadReports();
   }
 
+  void _openReportDetail(_Report report) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ResidentReportDetailScreen(
+          report: report,
+          severityColor: _severityColor(report.severity),
+          statusColor: _statusColor(report.status),
+        ),
+      ),
+    );
+  }
+
   Color _severityColor(String s) => switch (s) {
     'High' => AppColors.red,
     'Medium' => AppColors.amber,
@@ -161,11 +177,34 @@ class _ResidentDashboardState extends State<ResidentDashboard>
     _ => AppColors.textSecondary,
   };
 
+  String _dateLabel(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final d = DateTime(dt.year, dt.month, dt.day);
+
+    if (d == today) return 'TODAY';
+    if (d == yesterday) return 'YESTERDAY';
+    final diff = today.difference(d).inDays;
+    if (diff < 7) return '${diff}D AGO';
+    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+  }
+
   String _timeAgo(DateTime dt) {
     final d = DateTime.now().difference(dt);
+    if (d.inMinutes < 1) return 'JUST NOW';
     if (d.inMinutes < 60) return '${d.inMinutes}M AGO';
     if (d.inHours < 24) return '${d.inHours}H AGO';
     return '${d.inDays}D AGO';
+  }
+
+  Map<String, List<_Report>> get _groupedReports {
+    final groups = <String, List<_Report>>{};
+    for (final r in _reports) {
+      final label = _dateLabel(r.submittedAt);
+      groups.putIfAbsent(label, () => []).add(r);
+    }
+    return groups;
   }
 
   int get _pendingCount => _reports.where((r) => r.status == 'Pending').length;
@@ -275,7 +314,7 @@ class _ResidentDashboardState extends State<ResidentDashboard>
                     const SizedBox(height: 24),
                     _SectionLabel(
                       label: 'SITUATION OVERVIEW',
-                      tag: 'LAST UPDATED ${_timeAgo(DateTime.now())}',
+                      tag: _timeAgo(DateTime.now()),
                     ),
                     const SizedBox(height: 12),
                     Row(
@@ -320,18 +359,7 @@ class _ResidentDashboardState extends State<ResidentDashboard>
                           )
                         : _reports.isEmpty
                         ? _EmptyState(onSubmit: _openSubmitReport)
-                        : Column(
-                            children: _reports
-                                .map(
-                                  (r) => _IncidentCard(
-                                    report: r,
-                                    severityColor: _severityColor(r.severity),
-                                    statusColor: _statusColor(r.status),
-                                    timeAgo: _timeAgo(r.submittedAt),
-                                  ),
-                                )
-                                .toList(),
-                          ),
+                        : _buildGroupedList(),
                     const SizedBox(height: 100),
                   ],
                 ),
@@ -340,6 +368,431 @@ class _ResidentDashboardState extends State<ResidentDashboard>
       floatingActionButton: _SubmitFAB(onPressed: _openSubmitReport),
     );
   }
+
+  Widget _buildGroupedList() {
+    final groups = _groupedReports;
+    final keys = groups.keys.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: keys.map((dateLabel) {
+        final items = groups[dateLabel]!;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, top: 4),
+              child: Row(
+                children: [
+                  Container(width: 2, height: 10, color: AppColors.textDim),
+                  const SizedBox(width: 8),
+                  Text(
+                    dateLabel,
+                    style: const TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 9,
+                      color: AppColors.textDim,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Container(
+                      height: 1,
+                      color: AppColors.border.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${items.length}',
+                    style: const TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 9,
+                      color: AppColors.textDim,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ...items.map(
+              (r) => _IncidentCard(
+                report: r,
+                severityColor: _severityColor(r.severity),
+                statusColor: _statusColor(r.status),
+                timeAgo: _timeAgo(r.submittedAt),
+                onTap: () => _openReportDetail(r),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        );
+      }).toList(),
+    );
+  }
+}
+
+// ─── Resident Report Detail (read-only) ──────────────────────────────────────
+
+class _ResidentReportDetailScreen extends StatelessWidget {
+  final _Report report;
+  final Color severityColor;
+  final Color statusColor;
+
+  const _ResidentReportDetailScreen({
+    required this.report,
+    required this.severityColor,
+    required this.statusColor,
+  });
+
+  String _formatDateTime(DateTime dt) {
+    final months = [
+      'JAN',
+      'FEB',
+      'MAR',
+      'APR',
+      'MAY',
+      'JUN',
+      'JUL',
+      'AUG',
+      'SEP',
+      'OCT',
+      'NOV',
+      'DEC',
+    ];
+    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    final min = dt.minute.toString().padLeft(2, '0');
+    return '${dt.day} ${months[dt.month - 1]} ${dt.year} · $hour:$min $ampm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final r = report;
+    return Scaffold(
+      backgroundColor: AppColors.ink,
+      appBar: AppBar(
+        backgroundColor: AppColors.ink,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back,
+            color: AppColors.textSecondary,
+            size: 20,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Row(
+          children: [
+            const Icon(
+              Icons.description_outlined,
+              size: 16,
+              color: AppColors.electric,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'RPT-${r.id}',
+              style: const TextStyle(
+                fontFamily: 'Rajdhani',
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+                letterSpacing: 2,
+              ),
+            ),
+          ],
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 1, color: AppColors.border),
+        ),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _Badge(label: r.severity.toUpperCase(), color: severityColor),
+                const SizedBox(width: 8),
+                _Badge(
+                  label: r.category.toUpperCase(),
+                  color: AppColors.textDim,
+                  filled: false,
+                ),
+                const Spacer(),
+                _Badge(label: r.status.toUpperCase(), color: statusColor),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: Text(
+                'STATUS IS MANAGED BY BARANGAY OFFICIALS',
+                style: TextStyle(
+                  fontFamily: 'IBMPlexMono',
+                  fontSize: 8,
+                  color: AppColors.textDim.withValues(alpha: 0.6),
+                  letterSpacing: 1,
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            _DetailRow(
+              icon: Icons.access_time_rounded,
+              label: 'SUBMITTED',
+              value: _formatDateTime(r.submittedAt),
+            ),
+            const SizedBox(height: 16),
+
+            _DetailSection(
+              label: 'INCIDENT DESCRIPTION',
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Text(
+                  r.description,
+                  style: const TextStyle(
+                    fontFamily: 'SourceSans3',
+                    fontSize: 14,
+                    color: AppColors.textPrimary,
+                    height: 1.6,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            _DetailSection(
+              label: 'LOCATION',
+              child: Column(
+                children: [
+                  if (r.location.isNotEmpty)
+                    _DetailRow(
+                      icon: Icons.place_outlined,
+                      label: 'DESCRIPTION',
+                      value: r.location,
+                    ),
+                  if (r.hasCoords) ...[
+                    if (r.location.isNotEmpty) const SizedBox(height: 10),
+                    _DetailRow(
+                      icon: Icons.my_location_rounded,
+                      label: 'GPS COORDINATES',
+                      value:
+                          '${r.lat!.toStringAsFixed(6)}, ${r.lng!.toStringAsFixed(6)}',
+                    ),
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: SizedBox(
+                        height: 180,
+                        child: FlutterMap(
+                          options: MapOptions(
+                            initialCenter: latlng.LatLng(r.lat!, r.lng!),
+                            initialZoom: 15,
+                            interactionOptions: const InteractionOptions(
+                              flags: InteractiveFlag.none,
+                            ),
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              userAgentPackageName: 'com.triage.delrosario',
+                            ),
+                            MarkerLayer(
+                              markers: [
+                                Marker(
+                                  point: latlng.LatLng(r.lat!, r.lng!),
+                                  width: 40,
+                                  height: 40,
+                                  child: _MapPin(color: severityColor),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (!r.hasCoords && r.location.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 14,
+                        horizontal: 16,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(
+                            Icons.location_off_outlined,
+                            size: 14,
+                            color: AppColors.textDim,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'NO LOCATION PROVIDED',
+                            style: TextStyle(
+                              fontFamily: 'IBMPlexMono',
+                              fontSize: 10,
+                              color: AppColors.textDim,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            _DetailSection(
+              label: 'REPORT METADATA',
+              child: Column(
+                children: [
+                  _DetailRow(
+                    icon: Icons.tag,
+                    label: 'REPORT ID',
+                    value: 'RPT-${r.id}',
+                  ),
+                  const SizedBox(height: 10),
+                  _DetailRow(
+                    icon: Icons.category_outlined,
+                    label: 'CATEGORY',
+                    value: r.category,
+                  ),
+                  const SizedBox(height: 10),
+                  _DetailRow(
+                    icon: Icons.priority_high_rounded,
+                    label: 'SEVERITY',
+                    value: r.severity,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailSection extends StatelessWidget {
+  final String label;
+  final Widget child;
+  const _DetailSection({required this.label, required this.child});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Container(width: 3, height: 12, color: AppColors.electric),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'Rajdhani',
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+              letterSpacing: 2.5,
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 10),
+      child,
+    ],
+  );
+}
+
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _DetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Icon(icon, size: 13, color: AppColors.textDim),
+      const SizedBox(width: 8),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'IBMPlexMono',
+              fontSize: 8,
+              color: AppColors.textDim,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: const TextStyle(
+              fontFamily: 'IBMPlexMono',
+              fontSize: 11,
+              color: AppColors.textPrimary,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+}
+
+class _MapPin extends StatelessWidget {
+  final Color color;
+  final bool selected;
+  const _MapPin({required this.color, this.selected = false});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.9),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 1.5),
+          boxShadow: [
+            BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6),
+          ],
+        ),
+        child: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.white,
+          size: 12,
+        ),
+      ),
+      Container(width: 2, height: 6, color: color),
+    ],
+  );
 }
 
 // ─── Widgets ──────────────────────────────────────────────────────────────────
@@ -639,106 +1092,128 @@ class _IncidentCard extends StatelessWidget {
   final Color severityColor;
   final Color statusColor;
   final String timeAgo;
+  final VoidCallback onTap;
 
   const _IncidentCard({
     required this.report,
     required this.severityColor,
     required this.statusColor,
     required this.timeAgo,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(bottom: 8),
-    child: _AccentCard(
-      accentColor: severityColor,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _Badge(
-                  label: report.severity.toUpperCase(),
-                  color: severityColor,
-                ),
-                const SizedBox(width: 6),
-                _Badge(
-                  label: report.category.toUpperCase(),
-                  color: AppColors.textDim,
-                  filled: false,
-                ),
-                const Spacer(),
-                Text(
-                  timeAgo,
-                  style: const TextStyle(
-                    fontFamily: 'IBMPlexMono',
-                    fontSize: 9,
-                    color: AppColors.textDim,
-                    letterSpacing: 0.8,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              report.description,
-              style: const TextStyle(
-                fontFamily: 'SourceSans3',
-                fontSize: 13,
-                color: AppColors.textPrimary,
-                height: 1.4,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (report.location.isNotEmpty || report.hasCoords) ...[
-              const SizedBox(height: 6),
+    child: GestureDetector(
+      onTap: onTap,
+      child: _AccentCard(
+        accentColor: severityColor,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Row(
                 children: [
-                  const Icon(
-                    Icons.location_on_outlined,
-                    size: 11,
-                    color: AppColors.textDim,
+                  _Badge(
+                    label: report.severity.toUpperCase(),
+                    color: severityColor,
                   ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      report.hasCoords
-                          ? '${report.lat!.toStringAsFixed(5)}, ${report.lng!.toStringAsFixed(5)}'
-                                '${report.location.isNotEmpty ? ' · ${report.location}' : ''}'
-                          : report.location,
-                      style: const TextStyle(
-                        fontFamily: 'IBMPlexMono',
-                        fontSize: 9,
-                        color: AppColors.textDim,
-                        letterSpacing: 0.5,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                  const SizedBox(width: 6),
+                  _Badge(
+                    label: report.category.toUpperCase(),
+                    color: AppColors.textDim,
+                    filled: false,
+                  ),
+                  if (report.hasCoords) ...[
+                    const SizedBox(width: 6),
+                    Icon(
+                      Icons.location_on,
+                      size: 11,
+                      color: AppColors.electric.withValues(alpha: 0.7),
+                    ),
+                  ],
+                  const Spacer(),
+                  Text(
+                    timeAgo,
+                    style: const TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 9,
+                      color: AppColors.textDim,
+                      letterSpacing: 0.8,
                     ),
                   ),
                 ],
               ),
-            ],
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Text(
-                  'RPT-${report.id}',
-                  style: const TextStyle(
-                    fontFamily: 'IBMPlexMono',
-                    fontSize: 9,
-                    color: AppColors.textDim,
-                    letterSpacing: 1.2,
-                  ),
+              const SizedBox(height: 10),
+              Text(
+                report.description,
+                style: const TextStyle(
+                  fontFamily: 'SourceSans3',
+                  fontSize: 13,
+                  color: AppColors.textPrimary,
+                  height: 1.4,
                 ),
-                const Spacer(),
-                _Badge(label: report.status.toUpperCase(), color: statusColor),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (report.location.isNotEmpty || report.hasCoords) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.location_on_outlined,
+                      size: 11,
+                      color: AppColors.textDim,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        report.hasCoords
+                            ? '${report.lat!.toStringAsFixed(5)}, ${report.lng!.toStringAsFixed(5)}'
+                                  '${report.location.isNotEmpty ? ' · ${report.location}' : ''}'
+                            : report.location,
+                        style: const TextStyle(
+                          fontFamily: 'IBMPlexMono',
+                          fontSize: 9,
+                          color: AppColors.textDim,
+                          letterSpacing: 0.5,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ],
-            ),
-          ],
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Text(
+                    'RPT-${report.id}',
+                    style: const TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 9,
+                      color: AppColors.textDim,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    size: 12,
+                    color: AppColors.textDim,
+                  ),
+                  const Spacer(),
+                  _Badge(
+                    label: report.status.toUpperCase(),
+                    color: statusColor,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     ),
@@ -844,22 +1319,25 @@ class _SubmitFABState extends State<_SubmitFAB>
 class _MiniHexPainter extends CustomPainter {
   final Color fillColor;
   final Color strokeColor;
-  _MiniHexPainter({
-    this.fillColor = AppColors.surface,
-    this.strokeColor = AppColors.electric,
-  });
+  _MiniHexPainter({Color? fillColor, Color? strokeColor})
+    : fillColor = fillColor ?? AppColors.surface,
+      strokeColor = strokeColor ?? AppColors.electric;
 
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final cy = size.height / 2;
     final r = size.width / 2 * 0.88;
-    final path = Path();
+    final path = ui.Path();
     for (var i = 0; i < 6; i++) {
       final angle = (i * 60 - 30) * math.pi / 180;
       final x = cx + r * math.cos(angle);
       final y = cy + r * math.sin(angle);
-      i == 0 ? path.moveTo(x, y) : path.lineTo(x, y);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
     }
     path.close();
     canvas.drawPath(path, Paint()..color = fillColor);

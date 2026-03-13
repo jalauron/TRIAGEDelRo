@@ -3,6 +3,19 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../main.dart';
 
+const _officialPositions = [
+  'Barangay Captain',
+  'Barangay Kagawad',
+  'SK Chairperson',
+  'Barangay Secretary',
+  'Barangay Treasurer',
+  'BDRRMC Coordinator',
+  'BDRRMC Member',
+  'Tanod Commander',
+  'Barangay Tanod',
+  'Health Worker',
+];
+
 class Register extends StatefulWidget {
   const Register({super.key});
 
@@ -30,6 +43,7 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
 
   // ── State ─────────────────────────────────────────────────────
   String _role = 'community_member';
+  String? _selectedPosition;
   bool _loading = false;
   bool _obscure = true;
   String _msg = '';
@@ -96,7 +110,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  // ── Helper ────────────────────────────────────────────────────
   Widget _animated(int i, Widget child) => SlideTransition(
     position: _slideAnims[i],
     child: FadeTransition(opacity: _fadeAnims[i], child: child),
@@ -113,6 +126,13 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
       _emailCtrl.text.trim(),
       _passwordCtrl.text,
     ];
+
+    if (_isOfficial &&
+        (_selectedPosition == null || _selectedPosition!.isEmpty)) {
+      setState(() => _msg = 'SELECT A POSITION / TITLE');
+      return;
+    }
+
     final roleSpecific = _isOfficial
         ? [_positionCtrl.text.trim()]
         : [_phoneCtrl.text.trim(), _addressCtrl.text.trim()];
@@ -128,7 +148,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
 
     setState(() => _loading = true);
 
-    // Capture values before async gap
     final displayName =
         '${_firstNameCtrl.text.trim()} ${_lastNameCtrl.text.trim()}';
     final roleLabel = _isOfficial ? 'BARANGAY OFFICIAL' : 'COMMUNITY MEMBER';
@@ -174,7 +193,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
     }
   }
 
-  // ── Success dialog ────────────────────────────────────────────
   void _showSuccessDialog({
     required String displayName,
     required String roleLabel,
@@ -182,7 +200,7 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
     showDialog(
       context: context,
       barrierDismissible: false,
-      barrierColor: AppColors.ink.withOpacity(0.88),
+      barrierColor: AppColors.ink.withValues(alpha: 0.88),
       builder: (ctx) => Dialog(
         backgroundColor: AppColors.void_,
         shape: RoundedRectangleBorder(
@@ -194,17 +212,18 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ── Check icon ────────────────────────────────────
               Container(
                 width: 64,
                 height: 64,
                 decoration: BoxDecoration(
-                  color: AppColors.green.withOpacity(0.08),
+                  color: AppColors.green.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: AppColors.green.withOpacity(0.3)),
+                  border: Border.all(
+                    color: AppColors.green.withValues(alpha: 0.3),
+                  ),
                   boxShadow: [
                     BoxShadow(
-                      color: AppColors.green.withOpacity(0.22),
+                      color: AppColors.green.withValues(alpha: 0.22),
                       blurRadius: 20,
                       spreadRadius: 2,
                     ),
@@ -217,8 +236,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 20),
-
-              // ── Heading ───────────────────────────────────────
               const Text(
                 'ACCOUNT CREATED',
                 style: TextStyle(
@@ -230,8 +247,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 6),
-
-              // ── Display name ──────────────────────────────────
               Text(
                 displayName.toUpperCase(),
                 style: const TextStyle(
@@ -243,7 +258,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 10),
-
               const Text(
                 'Your account has been registered with\n'
                 'the Del Rosario BDRRMC System.\n'
@@ -258,18 +272,16 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 18),
-
-              // ── Role badge ────────────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.electric.withOpacity(0.08),
+                  color: AppColors.electric.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(2),
                   border: Border.all(
-                    color: AppColors.electric.withOpacity(0.25),
+                    color: AppColors.electric.withValues(alpha: 0.25),
                   ),
                 ),
                 child: Row(
@@ -294,17 +306,17 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 8),
-
-              // ── Status badge ──────────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
                   vertical: 5,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.green.withOpacity(0.08),
+                  color: AppColors.green.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(2),
-                  border: Border.all(color: AppColors.green.withOpacity(0.25)),
+                  border: Border.all(
+                    color: AppColors.green.withValues(alpha: 0.25),
+                  ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -331,8 +343,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 24),
-
-              // ── CTA button ────────────────────────────────────
               SizedBox(
                 width: double.infinity,
                 height: 48,
@@ -340,8 +350,8 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                   label: 'PROCEED TO LOGIN',
                   icon: Icons.arrow_forward_rounded,
                   onPressed: () {
-                    Navigator.pop(ctx); // dismiss dialog
-                    Navigator.pop(context); // go back to Login screen
+                    Navigator.pop(ctx);
+                    Navigator.pop(context);
                   },
                   primary: true,
                 ),
@@ -353,7 +363,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -382,8 +391,8 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(
-                                  color: AppColors.electric.withOpacity(
-                                    0.3 * _pulse.value,
+                                  color: AppColors.electric.withValues(
+                                    alpha: 0.3 * _pulse.value,
                                   ),
                                   blurRadius: 30 * _pulse.value,
                                   spreadRadius: 4 * _pulse.value,
@@ -452,7 +461,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Header row
                           _animated(
                             1,
                             Row(
@@ -481,8 +489,8 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                                   ),
                                   decoration: BoxDecoration(
                                     border: Border.all(
-                                      color: AppColors.electric.withOpacity(
-                                        0.4,
+                                      color: AppColors.electric.withValues(
+                                        alpha: 0.4,
                                       ),
                                     ),
                                     borderRadius: BorderRadius.circular(2),
@@ -556,7 +564,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                           _animated(3, _SectionHeader('ACCOUNT CREDENTIALS')),
                           const SizedBox(height: 14),
 
-                          // username
                           _animated(
                             3,
                             Column(
@@ -574,7 +581,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                           ),
                           const SizedBox(height: 14),
 
-                          // first / last name
                           _animated(
                             3,
                             Row(
@@ -615,7 +621,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                           ),
                           const SizedBox(height: 14),
 
-                          // email
                           _animated(
                             4,
                             Column(
@@ -634,7 +639,6 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                           ),
                           const SizedBox(height: 14),
 
-                          // password
                           _animated(
                             4,
                             Column(
@@ -680,11 +684,14 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                                         const SizedBox(height: 14),
                                         _FieldLabel('POSITION / TITLE'),
                                         const SizedBox(height: 6),
-                                        _TacticalField(
-                                          controller: _positionCtrl,
-                                          hint: 'e.g. Barangay Captain',
-                                          icon: Icons.badge_outlined,
-                                          action: TextInputAction.done,
+                                        _PositionDropdown(
+                                          value: _selectedPosition,
+                                          onChanged: (v) {
+                                            setState(() {
+                                              _selectedPosition = v;
+                                              _positionCtrl.text = v ?? '';
+                                            });
+                                          },
                                         ),
                                         const SizedBox(height: 22),
                                       ],
@@ -734,10 +741,10 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                                   vertical: 12,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: AppColors.red.withOpacity(0.08),
+                                  color: AppColors.red.withValues(alpha: 0.08),
                                   borderRadius: BorderRadius.circular(4),
                                   border: Border.all(
-                                    color: AppColors.red.withOpacity(0.4),
+                                    color: AppColors.red.withValues(alpha: 0.4),
                                   ),
                                 ),
                                 child: Row(
@@ -778,13 +785,13 @@ class _RegisterState extends State<Register> with TickerProviderStateMixin {
                               child: _loading
                                   ? Container(
                                       decoration: BoxDecoration(
-                                        color: AppColors.electric.withOpacity(
-                                          0.1,
+                                        color: AppColors.electric.withValues(
+                                          alpha: 0.1,
                                         ),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
-                                          color: AppColors.electric.withOpacity(
-                                            0.4,
+                                          color: AppColors.electric.withValues(
+                                            alpha: 0.4,
                                           ),
                                         ),
                                       ),
@@ -885,6 +892,71 @@ class _FieldLabel extends StatelessWidget {
       color: AppColors.textSecondary,
       letterSpacing: 2,
     ),
+  );
+}
+
+class _PositionDropdown extends StatelessWidget {
+  final String? value;
+  final void Function(String?) onChanged;
+  const _PositionDropdown({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<String>(
+    value: value,
+    isExpanded: true,
+    decoration: InputDecoration(
+      prefixIcon: const Icon(
+        Icons.badge_outlined,
+        size: 16,
+        color: AppColors.textSecondary,
+      ),
+      filled: true,
+      fillColor: AppColors.surface,
+      contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(4),
+        borderSide: const BorderSide(color: AppColors.border),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(4),
+        borderSide: const BorderSide(color: AppColors.border),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(4),
+        borderSide: const BorderSide(color: AppColors.electric, width: 1.5),
+      ),
+    ),
+    dropdownColor: AppColors.surface,
+    iconEnabledColor: AppColors.textSecondary,
+    style: const TextStyle(
+      fontFamily: 'IBMPlexMono',
+      fontSize: 13,
+      color: AppColors.textPrimary,
+    ),
+    hint: const Text(
+      'Select position...',
+      style: TextStyle(
+        fontFamily: 'IBMPlexMono',
+        color: AppColors.textDim,
+        fontSize: 12,
+      ),
+    ),
+    items: _officialPositions
+        .map(
+          (p) => DropdownMenuItem(
+            value: p,
+            child: Text(
+              p,
+              style: const TextStyle(
+                fontFamily: 'IBMPlexMono',
+                fontSize: 12,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+        )
+        .toList(),
+    onChanged: onChanged,
   );
 }
 
@@ -1036,7 +1108,7 @@ class _RoleTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
       decoration: BoxDecoration(
         color: selected
-            ? AppColors.electric.withOpacity(0.1)
+            ? AppColors.electric.withValues(alpha: 0.1)
             : AppColors.surface,
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
@@ -1087,7 +1159,7 @@ class _CornerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final p = Paint()
-      ..color = AppColors.electric.withOpacity(0.3)
+      ..color = AppColors.electric.withValues(alpha: 0.3)
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
     const l = 20.0;
@@ -1133,7 +1205,7 @@ class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final p = Paint()
-      ..color = AppColors.border.withOpacity(0.3)
+      ..color = AppColors.border.withValues(alpha: 0.3)
       ..strokeWidth = 0.5;
     for (double x = 0; x < size.width; x += 48)
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
