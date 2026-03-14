@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/auth_service.dart';
+import '../services/ml_service.dart';
 import '../main.dart';
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
@@ -44,6 +45,11 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
   String? _selectedCategory;
   String? _selectedSeverity;
   bool _submitting = false;
+
+  // ML classification
+  bool _classifying = false;
+  MLPrediction? _mlPrediction;
+  bool? _mlServerOnline;
 
   // Location
   double? _pinnedLat;
@@ -105,6 +111,12 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
   );
 
   Color _severityColor(String s) => switch (s) {
+    'High' => AppColors.red,
+    'Medium' => AppColors.amber,
+    _ => AppColors.green,
+  };
+
+  Color _mlSeverityColor(String s) => switch (s) {
     'High' => AppColors.red,
     'Medium' => AppColors.amber,
     _ => AppColors.green,
@@ -238,6 +250,79 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
       _pinnedLat = null;
       _pinnedLng = null;
     });
+  }
+
+  // ── ML CLASSIFICATION ─────────────────────────────────────────────────────
+  Future<void> _autoClassify() async {
+    final desc = _descriptionCtrl.text.trim();
+    if (desc.isEmpty) {
+      _showError('ENTER AN INCIDENT DESCRIPTION FIRST TO AUTO-CLASSIFY');
+      return;
+    }
+    if (desc.length < 10) {
+      _showError('DESCRIPTION IS TOO SHORT FOR ACCURATE CLASSIFICATION');
+      return;
+    }
+
+    setState(() => _classifying = true);
+
+    final prediction = await MLService.predict(desc);
+
+    if (!mounted) return;
+    setState(() => _classifying = false);
+
+    if (prediction == null) {
+      // Server offline — show friendly message
+      setState(() => _mlServerOnline = false);
+      _showError(
+        'ML SERVER OFFLINE — START THE PYTHON BACKEND OR CLASSIFY MANUALLY',
+      );
+      return;
+    }
+
+    setState(() {
+      _mlServerOnline = true;
+      _mlPrediction = prediction;
+      _selectedCategory = prediction.category;
+      _selectedSeverity = prediction.severity;
+    });
+
+    // Show confirmation snack
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: AppColors.void_,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(4),
+          side: const BorderSide(color: AppColors.electric, width: 1),
+        ),
+        content: Row(
+          children: [
+            const Icon(
+              Icons.auto_awesome_rounded,
+              color: AppColors.electric,
+              size: 14,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'ML: ${prediction.category.toUpperCase()} · '
+                '${prediction.severity.toUpperCase()} '
+                '(${(prediction.categoryConfidence * 100).toStringAsFixed(0)}% confident)',
+                style: const TextStyle(
+                  fontFamily: 'IBMPlexMono',
+                  fontSize: 9,
+                  color: AppColors.electric,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ── SUBMIT ────────────────────────────────────────────────────────────────
@@ -1076,6 +1161,209 @@ class _SubmitReportScreenState extends State<SubmitReportScreen>
                   ),
                   const SizedBox(height: 24),
 
+                  // ── ML Auto-Classify ───────────────────────────────
+                  _animated(5, _SectionHeader('AI TRIAGE CLASSIFICATION')),
+                  const SizedBox(height: 4),
+                  _animated(
+                    5,
+                    const Padding(
+                      padding: EdgeInsets.only(left: 11, bottom: 14),
+                      child: Text(
+                        'Let the ML model auto-classify category and severity from your description. You can still override manually.',
+                        style: TextStyle(
+                          fontFamily: 'IBMPlexMono',
+                          fontSize: 10,
+                          color: AppColors.textDim,
+                          letterSpacing: 0.3,
+                          height: 1.6,
+                        ),
+                      ),
+                    ),
+                  ),
+                  _animated(
+                    5,
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: _classifying
+                          ? Container(
+                              decoration: BoxDecoration(
+                                color: AppColors.electric.withValues(
+                                  alpha: 0.07,
+                                ),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: AppColors.electric.withValues(
+                                    alpha: 0.3,
+                                  ),
+                                ),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      color: AppColors.electric,
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  SizedBox(width: 10),
+                                  Text(
+                                    'CLASSIFYING...',
+                                    style: TextStyle(
+                                      fontFamily: 'IBMPlexMono',
+                                      fontSize: 11,
+                                      color: AppColors.electric,
+                                      letterSpacing: 2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : GestureDetector(
+                              onTap: _autoClassify,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: AppColors.electric.withValues(
+                                    alpha: 0.08,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: AppColors.electric.withValues(
+                                      alpha: 0.5,
+                                    ),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.auto_awesome_rounded,
+                                      size: 15,
+                                      color: AppColors.electric,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      _mlPrediction != null
+                                          ? 'RE-CLASSIFY WITH ML MODEL'
+                                          : 'AUTO-CLASSIFY WITH ML MODEL',
+                                      style: const TextStyle(
+                                        fontFamily: 'Rajdhani',
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.electric,
+                                        letterSpacing: 2,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+
+                  // ML result banner
+                  if (_mlPrediction != null) ...[
+                    const SizedBox(height: 10),
+                    _animated(
+                      5,
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.electric.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: AppColors.electric.withValues(alpha: 0.2),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.psychology_outlined,
+                                  size: 12,
+                                  color: AppColors.electric,
+                                ),
+                                const SizedBox(width: 6),
+                                const Text(
+                                  'ML CLASSIFICATION RESULT',
+                                  style: TextStyle(
+                                    fontFamily: 'IBMPlexMono',
+                                    fontSize: 9,
+                                    color: AppColors.electric,
+                                    letterSpacing: 1.5,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.green.withValues(
+                                      alpha: 0.1,
+                                    ),
+                                    borderRadius: BorderRadius.circular(2),
+                                    border: Border.all(
+                                      color: AppColors.green.withValues(
+                                        alpha: 0.3,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    '${(_mlPrediction!.categoryConfidence * 100).toStringAsFixed(0)}% CONF',
+                                    style: const TextStyle(
+                                      fontFamily: 'IBMPlexMono',
+                                      fontSize: 8,
+                                      color: AppColors.green,
+                                      letterSpacing: 0.8,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                _MLResultChip(
+                                  icon: Icons.category_outlined,
+                                  label: 'CATEGORY',
+                                  value: _mlPrediction!.category.toUpperCase(),
+                                  color: AppColors.electric,
+                                ),
+                                const SizedBox(width: 8),
+                                _MLResultChip(
+                                  icon: Icons.priority_high_rounded,
+                                  label: 'SEVERITY',
+                                  value: _mlPrediction!.severity.toUpperCase(),
+                                  color: _mlSeverityColor(
+                                    _mlPrediction!.severity,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Applied to form above. Override manually if needed.',
+                              style: TextStyle(
+                                fontFamily: 'IBMPlexMono',
+                                fontSize: 9,
+                                color: AppColors.textDim,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+
                   // ── Submit ─────────────────────────────────────────
                   _animated(
                     6,
@@ -1317,6 +1605,68 @@ class _TacticalButtonState extends State<_TacticalButton> {
                     : AppColors.textSecondary,
                 letterSpacing: 2.5,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── ML Result Chip ────────────────────────────────────────────────────────────
+
+class _MLResultChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  const _MLResultChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: color.withValues(alpha: 0.25)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 10, color: color.withValues(alpha: 0.7)),
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontFamily: 'IBMPlexMono',
+                    fontSize: 8,
+                    color: color.withValues(alpha: 0.7),
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              value,
+              style: TextStyle(
+                fontFamily: 'Rajdhani',
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: color,
+                letterSpacing: 1,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),

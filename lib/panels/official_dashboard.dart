@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlng;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/auth_service.dart';
+import '../services/gemini_service.dart';
 import 'login.dart';
 import 'account_settings.dart';
 import '../main.dart';
@@ -72,7 +73,12 @@ class _OfficialDashboardState extends State<OfficialDashboard>
   bool _loadingUser = true;
   bool _loadingReports = true;
   String _filterStatus = 'All';
+  String _searchQuery = '';
+  final _searchCtrl = TextEditingController();
   final _statuses = ['All', 'Pending', 'Ongoing', 'Resolved'];
+
+  SituationBriefing? _briefing;
+  bool _loadingBriefing = false;
 
   late AnimationController _pulseCtrl;
   late Animation<double> _pulse;
@@ -95,6 +101,7 @@ class _OfficialDashboardState extends State<OfficialDashboard>
   @override
   void dispose() {
     _pulseCtrl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -122,10 +129,42 @@ class _OfficialDashboardState extends State<OfficialDashboard>
       setState(() {
         _reports = (data as List).map((r) => _Report.fromMap(r)).toList();
       });
+      _loadBriefing();
     } catch (_) {
     } finally {
       if (mounted) setState(() => _loadingReports = false);
     }
+  }
+
+  Future<void> _loadBriefing() async {
+    final active = _reports.where((r) => r.status != 'Resolved').toList();
+    print(
+      '_loadBriefing: total reports=${_reports.length}, active=${active.length}',
+    );
+    if (active.isEmpty) {
+      print('_loadBriefing: no active reports, skipping');
+      return;
+    }
+    setState(() => _loadingBriefing = true);
+    print('_loadBriefing: calling Gemini...');
+    final briefing = await GeminiService.generateSituationBriefing(
+      reports: active
+          .take(10)
+          .map(
+            (r) => {
+              'severity': r.severity,
+              'category': r.category,
+              'description': r.description,
+            },
+          )
+          .toList(),
+    );
+    print('_loadBriefing: result=$briefing');
+    if (mounted)
+      setState(() {
+        _briefing = briefing;
+        _loadingBriefing = false;
+      });
   }
 
   Future<void> _updateStatus(String reportId, String newStatus) async {
@@ -287,8 +326,20 @@ class _OfficialDashboardState extends State<OfficialDashboard>
 
   int get _pendingCount => _reports.where((r) => r.status == 'Pending').length;
   int get _ongoingCount => _reports.where((r) => r.status == 'Ongoing').length;
+  int get _resolvedCount =>
+      _reports.where((r) => r.status == 'Resolved').length;
   int get _highCount => _reports.where((r) => r.severity == 'High').length;
+  int get _mediumCount => _reports.where((r) => r.severity == 'Medium').length;
+  int get _lowCount => _reports.where((r) => r.severity == 'Low').length;
   int get _mappableCount => _reports.where((r) => r.hasCoords).length;
+
+  Map<String, int> get _categoryCounts {
+    final counts = <String, int>{};
+    for (final r in _reports) {
+      counts[r.category] = (counts[r.category] ?? 0) + 1;
+    }
+    return counts;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -431,6 +482,13 @@ class _OfficialDashboardState extends State<OfficialDashboard>
                       ],
                     ),
                     const SizedBox(height: 12),
+
+                    // ── AI SITUATION BRIEFING ──────────────────────────
+                    _AISituationCard(
+                      briefing: _briefing,
+                      loading: _loadingBriefing,
+                      onRefresh: _loadBriefing,
+                    ),
 
                     if (_mappableCount > 0) ...[
                       GestureDetector(
@@ -662,12 +720,30 @@ class _ReportDetailScreen extends StatefulWidget {
 class _ReportDetailScreenState extends State<_ReportDetailScreen> {
   late Color _statusColor;
   late String _currentStatus;
+  GeminiAnalysis? _analysis;
+  bool _loadingAnalysis = false;
 
   @override
   void initState() {
     super.initState();
     _currentStatus = widget.report.status;
     _statusColor = widget.statusColor;
+    _loadAnalysis();
+  }
+
+  Future<void> _loadAnalysis() async {
+    setState(() => _loadingAnalysis = true);
+    final result = await GeminiService.analyzeReport(
+      description: widget.report.description,
+      category: widget.report.category,
+      severity: widget.report.severity,
+      location: widget.report.location,
+    );
+    if (mounted)
+      setState(() {
+        _analysis = result;
+        _loadingAnalysis = false;
+      });
   }
 
   Color _getStatusColor(String s) => switch (s) {
@@ -895,6 +971,14 @@ class _ReportDetailScreenState extends State<_ReportDetailScreen> {
                   ),
                 ),
               ),
+            ),
+            const SizedBox(height: 20),
+
+            // ── AI ANALYSIS ────────────────────────────────────
+            _AIAnalysisSection(
+              analysis: _analysis,
+              loading: _loadingAnalysis,
+              onRefresh: _loadAnalysis,
             ),
             const SizedBox(height: 20),
 
@@ -2216,5 +2300,498 @@ class _LogoutDialog extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+// ─── AI Situation Card (main dashboard) ──────────────────────────────────────
+
+class _AISituationCard extends StatelessWidget {
+  final SituationBriefing? briefing;
+  final bool loading;
+  final VoidCallback onRefresh;
+  const _AISituationCard({
+    required this.briefing,
+    required this.loading,
+    required this.onRefresh,
+  });
+
+  Color _statusColor(String s) => switch (s) {
+    'CRITICAL' => AppColors.red,
+    'ELEVATED' => AppColors.amber,
+    _ => AppColors.green,
+  };
+
+  IconData _statusIcon(String s) => switch (s) {
+    'CRITICAL' => Icons.crisis_alert_rounded,
+    'ELEVATED' => Icons.warning_amber_rounded,
+    _ => Icons.check_circle_outline_rounded,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.electric.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.electric.withValues(alpha: 0.06),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(6),
+              ),
+              border: Border(bottom: BorderSide(color: AppColors.border)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.psychology_rounded,
+                  size: 14,
+                  color: AppColors.electric,
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'AI SITUATION BRIEFING',
+                  style: TextStyle(
+                    fontFamily: 'Rajdhani',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.electric,
+                    letterSpacing: 2,
+                  ),
+                ),
+                const Spacer(),
+                if (!loading)
+                  GestureDetector(
+                    onTap: onRefresh,
+                    child: const Icon(
+                      Icons.refresh_rounded,
+                      size: 14,
+                      color: AppColors.textDim,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          // Body
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: loading
+                ? const Row(
+                    children: [
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          color: AppColors.electric,
+                          strokeWidth: 1.5,
+                        ),
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        'ANALYZING SITUATION...',
+                        style: TextStyle(
+                          fontFamily: 'IBMPlexMono',
+                          fontSize: 9,
+                          color: AppColors.textDim,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ],
+                  )
+                : briefing == null
+                ? const Text(
+                    'AI analysis unavailable',
+                    style: TextStyle(
+                      fontFamily: 'IBMPlexMono',
+                      fontSize: 10,
+                      color: AppColors.textDim,
+                    ),
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Status badge + summary
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _statusColor(
+                                briefing!.overallStatus,
+                              ).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(3),
+                              border: Border.all(
+                                color: _statusColor(
+                                  briefing!.overallStatus,
+                                ).withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _statusIcon(briefing!.overallStatus),
+                                  size: 11,
+                                  color: _statusColor(briefing!.overallStatus),
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  briefing!.overallStatus,
+                                  style: TextStyle(
+                                    fontFamily: 'IBMPlexMono',
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    color: _statusColor(
+                                      briefing!.overallStatus,
+                                    ),
+                                    letterSpacing: 1,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        briefing!.summary,
+                        style: const TextStyle(
+                          fontFamily: 'IBMPlexMono',
+                          fontSize: 10,
+                          color: AppColors.textPrimary,
+                          height: 1.6,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      _BriefingRow(
+                        icon: Icons.flag_outlined,
+                        label: 'TOP PRIORITY',
+                        value: briefing!.topPriority,
+                      ),
+                      const SizedBox(height: 6),
+                      _BriefingRow(
+                        icon: Icons.lightbulb_outline_rounded,
+                        label: 'RECOMMENDATION',
+                        value: briefing!.recommendation,
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BriefingRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _BriefingRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Icon(icon, size: 11, color: AppColors.electric),
+      const SizedBox(width: 6),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontFamily: 'IBMPlexMono',
+                fontSize: 8,
+                color: AppColors.textDim,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              style: const TextStyle(
+                fontFamily: 'IBMPlexMono',
+                fontSize: 10,
+                color: AppColors.textPrimary,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+// ─── AI Analysis Section (report detail) ─────────────────────────────────────
+
+class _AIAnalysisSection extends StatelessWidget {
+  final GeminiAnalysis? analysis;
+  final bool loading;
+  final VoidCallback onRefresh;
+  const _AIAnalysisSection({
+    required this.analysis,
+    required this.loading,
+    required this.onRefresh,
+  });
+
+  Color _riskColor(String r) => switch (r) {
+    'CRITICAL' => AppColors.red,
+    'HIGH' => AppColors.red,
+    'MODERATE' => AppColors.amber,
+    _ => AppColors.green,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(width: 3, height: 12, color: AppColors.electric),
+            const SizedBox(width: 8),
+            const Text(
+              'AI ANALYSIS',
+              style: TextStyle(
+                fontFamily: 'Rajdhani',
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+                letterSpacing: 2.5,
+              ),
+            ),
+            const Spacer(),
+            if (!loading)
+              GestureDetector(
+                onTap: onRefresh,
+                child: Row(
+                  children: const [
+                    Icon(
+                      Icons.refresh_rounded,
+                      size: 12,
+                      color: AppColors.textDim,
+                    ),
+                    SizedBox(width: 4),
+                    Text(
+                      'REFRESH',
+                      style: TextStyle(
+                        fontFamily: 'IBMPlexMono',
+                        fontSize: 8,
+                        color: AppColors.textDim,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: AppColors.electric.withValues(alpha: 0.25),
+            ),
+          ),
+          child: loading
+              ? const Row(
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        color: AppColors.electric,
+                        strokeWidth: 1.5,
+                      ),
+                    ),
+                    SizedBox(width: 10),
+                    Text(
+                      'GEMINI AI ANALYZING...',
+                      style: TextStyle(
+                        fontFamily: 'IBMPlexMono',
+                        fontSize: 9,
+                        color: AppColors.textDim,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                )
+              : analysis == null
+              ? Row(
+                  children: [
+                    const Icon(
+                      Icons.cloud_off_outlined,
+                      size: 13,
+                      color: AppColors.textDim,
+                    ),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'AI analysis unavailable',
+                      style: TextStyle(
+                        fontFamily: 'IBMPlexMono',
+                        fontSize: 10,
+                        color: AppColors.textDim,
+                      ),
+                    ),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Risk level badge
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _riskColor(
+                              analysis!.riskLevel,
+                            ).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(3),
+                            border: Border.all(
+                              color: _riskColor(
+                                analysis!.riskLevel,
+                              ).withValues(alpha: 0.4),
+                            ),
+                          ),
+                          child: Text(
+                            'RISK: ${analysis!.riskLevel}',
+                            style: TextStyle(
+                              fontFamily: 'IBMPlexMono',
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: _riskColor(analysis!.riskLevel),
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.electric.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(3),
+                            border: Border.all(
+                              color: AppColors.electric.withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: Text(
+                            analysis!.urgency.toUpperCase(),
+                            style: const TextStyle(
+                              fontFamily: 'IBMPlexMono',
+                              fontSize: 9,
+                              color: AppColors.electric,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      analysis!.riskSummary,
+                      style: const TextStyle(
+                        fontFamily: 'IBMPlexMono',
+                        fontSize: 10,
+                        color: AppColors.textPrimary,
+                        height: 1.6,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _AnalysisRow(
+                      icon: Icons.checklist_rounded,
+                      label: 'RECOMMENDED ACTION',
+                      value: analysis!.recommendedAction,
+                    ),
+                    if (analysis!.additionalNotes.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _AnalysisRow(
+                        icon: Icons.info_outline_rounded,
+                        label: 'NOTES',
+                        value: analysis!.additionalNotes,
+                      ),
+                    ],
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AnalysisRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _AnalysisRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Icon(icon, size: 12, color: AppColors.electric),
+      const SizedBox(width: 6),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontFamily: 'IBMPlexMono',
+                fontSize: 8,
+                color: AppColors.textDim,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              style: const TextStyle(
+                fontFamily: 'IBMPlexMono',
+                fontSize: 10,
+                color: AppColors.textPrimary,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
   );
 }
